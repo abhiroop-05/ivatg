@@ -30,9 +30,7 @@ jobs:
 
       - name: Download Raylib source
         run: |
-          wget -q https://github.com/raysan5/raylib/releases/download/5.0/raylib-5.0_src.tar.gz
-          tar xzf raylib-5.0_src.tar.gz
-          mv raylib-5.0 raylib_src
+          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git raylib_src
 
       - name: Build Raylib for Web
         run: |
@@ -53,14 +51,12 @@ jobs:
                -s TOTAL_MEMORY=67108864 \
                -s ALLOW_MEMORY_GROWTH=1 \
                -s FORCE_FILESYSTEM=1 \
-               --shell-file index.html \
                --preload-file map_default.txt \
-               -o web_out/gta_sim.html
+               -o web_out/gta_sim.js
 
       - name: Prepare Pages output
         run: |
           mkdir -p pages_out
-          # Use our custom index.html instead of emscripten's generated one
           cp web_out/gta_sim.js pages_out/gta_sim.js
           cp web_out/gta_sim.wasm pages_out/gta_sim.wasm
           if [ -f web_out/gta_sim.data ]; then cp web_out/gta_sim.data pages_out/gta_sim.data; fi

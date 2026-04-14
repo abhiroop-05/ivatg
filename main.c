@@ -17,6 +17,10 @@
 #include <math.h>
 #include <signal.h>
 
+#ifdef PLATFORM_WEB
+#include <emscripten/emscripten.h>
+#endif
+
 #ifdef _WIN32
 #ifdef USE_RAYLIB
 /* Avoid including windows.h — it conflicts with Raylib (Rectangle, CloseWindow, etc.)
@@ -260,6 +264,237 @@ static void weapon_tick(Entity* player) {
 }
 
 /* ============================================================
+ *  ONE FRAME OF GAME LOGIC (called by main loop or emscripten)
+ * ============================================================ */
+
+static void game_frame(void) {
+    long frame_start = now_us();
+    float dt = TICK_DT;
+
+#ifdef USE_RAYLIB
+    if (WindowShouldClose()) { g_running = 0; return; }
+#endif
+
+    switch (g_state) {
+
+    /* ======================== TITLE SCREEN ======================== */
+    case STATE_TITLE: {
+        g_state_timer += dt;
+        renderer_draw_title(g_state_timer);
+        if (g_state_timer > 2.0f) {
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                IsKeyPressed(KEY_SPACE)) {
+                g_state = STATE_MENU;
+                g_menu_sel = 0;
+            }
+        }
+    } break;
+
+    /* ======================== MAIN MENU ======================== */
+    case STATE_MENU: {
+        renderer_draw_menu(g_menu_sel);
+        if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
+            g_menu_sel--;
+            if (g_menu_sel < 0) g_menu_sel = 2;
+        }
+        if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
+            g_menu_sel++;
+            if (g_menu_sel > 2) g_menu_sel = 0;
+        }
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+            if (g_menu_sel == 0) {
+                game_init();
+                g_state = STATE_PLAYING;
+            } else if (g_menu_sel == 1) {
+                g_state = STATE_SETTINGS;
+                g_settings_sel = 0;
+                g_settings_waiting = -1;
+                g_settings_from = STATE_MENU;
+            } else {
+                g_running = 0;
+            }
+        }
+    } break;
+
+    /* ======================== SETTINGS ======================== */
+    case STATE_SETTINGS: {
+        renderer_draw_settings(g_settings_sel, g_settings_waiting, &g_keybinds);
+        if (g_settings_waiting >= 0) {
+            int key = GetKeyPressed();
+            if (key > 0 && key != KEY_ESCAPE) {
+                int* ptr = keybind_get_ptr(&g_keybinds, g_settings_waiting);
+                if (ptr) *ptr = key;
+                g_settings_waiting = -1;
+            }
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                g_settings_waiting = -1;
+            }
+        } else {
+            if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
+                g_settings_sel--;
+                if (g_settings_sel < 0) g_settings_sel = KEYBIND_COUNT - 1;
+            }
+            if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
+                g_settings_sel++;
+                if (g_settings_sel >= KEYBIND_COUNT) g_settings_sel = 0;
+            }
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+                g_settings_waiting = g_settings_sel;
+            }
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                g_state = g_settings_from;
+            }
+        }
+    } break;
+
+    /* ======================== PLAYING ======================== */
+    case STATE_PLAYING: {
+        InputState inp;
+        input_poll(&inp);
+        if (inp.quit) {
+            g_state = STATE_PAUSED;
+            g_pause_sel = 0;
+            break;
+        }
+
+        Entity* player = entity_get(&g_pool, g_player_id);
+        if (!player || !player->h.alive) {
+            g_state = STATE_BUSTED;
+            g_state_timer = 0;
+            break;
+        }
+
+        if (inp.toggle_view) {
+            int mode = renderer_get_camera_mode();
+            renderer_set_camera_mode(mode == CAM_THIRD_PERSON ? CAM_FIRST_PERSON : CAM_THIRD_PERSON);
+        }
+
+        /* --- Player control --- */
+        if (player->vehicle >= 0) {
+            Entity* veh = entity_get(&g_pool, player->vehicle);
+            if (veh) {
+                float thr = 0.0f, steer = 0.0f;
+                if (inp.up)    thr += 1.0f;
+                if (inp.down)  thr -= 1.0f;
+                if (inp.left)  steer -= 1.0f;
+                if (inp.right) steer += 1.0f;
+                veh->throttle_input = thr;
+                veh->steer_input = steer;
+                veh->brake_input = inp.brake;
+            }
+            if (inp.enter_exit) vehicle_exit(&g_pool, player);
+            if (inp.shoot) do_shoot(player);
+            if (inp.reload && !player->gun.reloading &&
+                player->gun.ammo_in_mag < player->gun.mag_size) {
+                player->gun.reloading = true;
+                player->gun.reload_timer = PISTOL_RELOAD_TICKS;
+            }
+        } else {
+            const float INV_SQRT2 = 0.70710678f;
+            float fwd_x = -INV_SQRT2, fwd_y = -INV_SQRT2;
+            float rgt_x =  INV_SQRT2, rgt_y = -INV_SQRT2;
+            float ax = 0, ay = 0;
+            if (inp.up)    { ax += fwd_x; ay += fwd_y; }
+            if (inp.down)  { ax -= fwd_x; ay -= fwd_y; }
+            if (inp.right) { ax += rgt_x; ay += rgt_y; }
+            if (inp.left)  { ax -= rgt_x; ay -= rgt_y; }
+            float mag = sqrtf(ax*ax + ay*ay);
+
+            float move_speed = inp.sprint ? PED_SPRINT_SPEED : PED_MAX_SPEED;
+            float move_accel = inp.sprint ? PED_SPRINT_ACCEL : PED_ACCEL;
+
+            if (mag > 0.001f) {
+                ax /= mag; ay /= mag;
+                player->p.ax = ax * move_accel;
+                player->p.ay = ay * move_accel;
+                float vx = player->p.vx, vy = player->p.vy;
+                float v = sqrtf(vx*vx + vy*vy);
+                if (v > move_speed) {
+                    player->p.vx = vx / v * move_speed;
+                    player->p.vy = vy / v * move_speed;
+                }
+            }
+
+            if (inp.mouse_valid) {
+                float ddx = inp.mouse_wx - player->t.x;
+                float ddy = inp.mouse_wy - player->t.y;
+                if (ddx*ddx + ddy*ddy > 0.01f) player->t.heading = atan2f(ddy, ddx);
+            } else if (mag > 0.001f) {
+                player->t.heading = atan2f(ay, ax);
+            }
+
+            if (inp.jump && player->t.z < 0.01f) player->t.vz = PED_JUMP_VEL;
+            if (inp.enter_exit) vehicle_try_enter(&g_pool, player, 1.6f);
+            if (inp.shoot) do_shoot(player);
+            if (inp.reload && !player->gun.reloading &&
+                player->gun.ammo_in_mag < player->gun.mag_size) {
+                player->gun.reloading = true;
+                player->gun.reload_timer = PISTOL_RELOAD_TICKS;
+            }
+        }
+
+        weapon_tick(player);
+        vehicle_tick(&g_pool, &g_world, TICK_DT);
+        ai_tick(&g_pool, &g_world, g_player_id, g_tick, player->w.stars);
+        physics_tick(&g_pool, &g_world, TICK_DT);
+        wanted_tick(&g_pool, &g_world, player, g_tick);
+        wanted_spawn_police(&g_pool, &g_world, player, g_tick);
+
+        if (!player->h.alive) g_busted = 1;
+
+        float cam_x = player->t.x;
+        float cam_y = player->t.y;
+        renderer_render_world(&g_world, &g_pool, player, cam_x, cam_y);
+        g_tick++;
+    } break;
+
+    /* ======================== PAUSED ======================== */
+    case STATE_PAUSED: {
+        renderer_draw_pause(g_pause_sel);
+        if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
+            g_pause_sel--;
+            if (g_pause_sel < 0) g_pause_sel = 2;
+        }
+        if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
+            g_pause_sel++;
+            if (g_pause_sel > 2) g_pause_sel = 0;
+        }
+        if (IsKeyPressed(KEY_ESCAPE)) g_state = STATE_PLAYING;
+        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+            if (g_pause_sel == 0) {
+                g_state = STATE_PLAYING;
+            } else if (g_pause_sel == 1) {
+                g_state = STATE_SETTINGS;
+                g_settings_sel = 0;
+                g_settings_waiting = -1;
+                g_settings_from = STATE_PAUSED;
+            } else {
+                g_state = STATE_MENU;
+                g_menu_sel = 0;
+            }
+        }
+    } break;
+
+    /* ======================== BUSTED ======================== */
+    case STATE_BUSTED: {
+        g_state_timer += dt;
+        renderer_draw_busted(g_state_timer);
+        if (g_state_timer > 4.0f) {
+            game_init();
+            g_state = STATE_PLAYING;
+        }
+    } break;
+
+    } /* end switch */
+
+#ifndef PLATFORM_WEB
+    long elapsed = now_us() - frame_start;
+    long to_sleep = 1000000L / TICK_HZ - elapsed;
+    if (to_sleep > 0) sleep_us(to_sleep);
+#endif
+}
+
+/* ============================================================
  *  MAIN
  * ============================================================ */
 
@@ -279,296 +514,16 @@ int main(int argc, char** argv) {
     g_renderer->init(g_renderer->viewport_w, g_renderer->viewport_h);
     input_init();
 
-    long tick_us = 1000000L / TICK_HZ;
     g_state = STATE_TITLE;
     g_state_timer = 0;
 
+#ifdef PLATFORM_WEB
+    emscripten_set_main_loop(game_frame, 60, 1);
+#else
     while (g_running) {
-        long frame_start = now_us();
-        float dt = TICK_DT;
-
-#ifdef USE_RAYLIB
-        /* Raylib needs PollInputEvents even for menu screens */
-        if (WindowShouldClose()) break;
-#endif
-
-        switch (g_state) {
-
-        /* ======================== TITLE SCREEN ======================== */
-        case STATE_TITLE: {
-            g_state_timer += dt;
-            /* Render first — EndDrawing() polls fresh input */
-            renderer_draw_title(g_state_timer);
-            /* Now check input (fresh from this frame's PollInputEvents) */
-            if (g_state_timer > 2.0f) {
-                if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
-                    IsKeyPressed(KEY_SPACE)) {
-                    g_state = STATE_MENU;
-                    g_menu_sel = 0;
-                }
-            }
-        } break;
-
-        /* ======================== MAIN MENU ======================== */
-        case STATE_MENU: {
-            /* Render first so PollInputEvents runs and clears stale keys */
-            renderer_draw_menu(g_menu_sel);
-            /* Now check fresh input */
-            if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
-                g_menu_sel--;
-                if (g_menu_sel < 0) g_menu_sel = 2;
-            }
-            if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
-                g_menu_sel++;
-                if (g_menu_sel > 2) g_menu_sel = 0;
-            }
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                if (g_menu_sel == 0) {
-                    /* START */
-                    game_init();
-                    g_state = STATE_PLAYING;
-                } else if (g_menu_sel == 1) {
-                    /* SETTINGS */
-                    g_state = STATE_SETTINGS;
-                    g_settings_sel = 0;
-                    g_settings_waiting = -1;
-                    g_settings_from = STATE_MENU;
-                } else {
-                    /* QUIT */
-                    g_running = 0;
-                }
-            }
-        } break;
-
-        /* ======================== SETTINGS ======================== */
-        case STATE_SETTINGS: {
-            /* Render first */
-            renderer_draw_settings(g_settings_sel, g_settings_waiting, &g_keybinds);
-            /* Then check input */
-            if (g_settings_waiting >= 0) {
-                /* Waiting for a key press to rebind */
-                int key = GetKeyPressed();
-                if (key > 0 && key != KEY_ESCAPE) {
-                    int* ptr = keybind_get_ptr(&g_keybinds, g_settings_waiting);
-                    if (ptr) *ptr = key;
-                    g_settings_waiting = -1;
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    g_settings_waiting = -1;
-                }
-            } else {
-                if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
-                    g_settings_sel--;
-                    if (g_settings_sel < 0) g_settings_sel = KEYBIND_COUNT - 1;
-                }
-                if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
-                    g_settings_sel++;
-                    if (g_settings_sel >= KEYBIND_COUNT) g_settings_sel = 0;
-                }
-                if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                    g_settings_waiting = g_settings_sel;
-                }
-                if (IsKeyPressed(KEY_ESCAPE)) {
-                    g_state = g_settings_from;
-                }
-            }
-        } break;
-
-        /* ======================== PLAYING ======================== */
-        case STATE_PLAYING: {
-            InputState inp;
-            input_poll(&inp);
-            if (inp.quit) {
-                /* ESC opens pause menu instead of quitting */
-                g_state = STATE_PAUSED;
-                g_pause_sel = 0;
-                break;
-            }
-
-            Entity* player = entity_get(&g_pool, g_player_id);
-            if (!player || !player->h.alive) {
-                if (g_busted) {
-                    g_state = STATE_BUSTED;
-                    g_state_timer = 0;
-                } else {
-                    /* Death not from police — just restart */
-                    g_state = STATE_BUSTED;
-                    g_state_timer = 0;
-                }
-                break;
-            }
-
-            /* Toggle camera */
-            if (inp.toggle_view) {
-                int mode = renderer_get_camera_mode();
-                renderer_set_camera_mode(mode == CAM_THIRD_PERSON ? CAM_FIRST_PERSON : CAM_THIRD_PERSON);
-            }
-
-            /* --- Player control --- */
-            if (player->vehicle >= 0) {
-                Entity* veh = entity_get(&g_pool, player->vehicle);
-                if (veh) {
-                    float thr = 0.0f, steer = 0.0f;
-                    if (inp.up)    thr += 1.0f;
-                    if (inp.down)  thr -= 1.0f;
-                    if (inp.left)  steer -= 1.0f;
-                    if (inp.right) steer += 1.0f;
-                    veh->throttle_input = thr;
-                    veh->steer_input = steer;
-                    veh->brake_input = inp.brake;
-                }
-                if (inp.enter_exit) {
-                    vehicle_exit(&g_pool, player);
-                }
-                /* Shoot from vehicle */
-                if (inp.shoot) {
-                    do_shoot(player);
-                }
-                if (inp.reload && !player->gun.reloading &&
-                    player->gun.ammo_in_mag < player->gun.mag_size) {
-                    player->gun.reloading = true;
-                    player->gun.reload_timer = PISTOL_RELOAD_TICKS;
-                }
-            } else {
-                /* On foot movement */
-                const float INV_SQRT2 = 0.70710678f;
-                float fwd_x = -INV_SQRT2, fwd_y = -INV_SQRT2;
-                float rgt_x =  INV_SQRT2, rgt_y = -INV_SQRT2;
-                float ax = 0, ay = 0;
-                if (inp.up)    { ax += fwd_x; ay += fwd_y; }
-                if (inp.down)  { ax -= fwd_x; ay -= fwd_y; }
-                if (inp.right) { ax += rgt_x; ay += rgt_y; }
-                if (inp.left)  { ax -= rgt_x; ay -= rgt_y; }
-                float mag = sqrtf(ax*ax + ay*ay);
-
-                /* Sprint or normal speed */
-                float move_speed = inp.sprint ? PED_SPRINT_SPEED : PED_MAX_SPEED;
-                float move_accel = inp.sprint ? PED_SPRINT_ACCEL : PED_ACCEL;
-
-                if (mag > 0.001f) {
-                    ax /= mag; ay /= mag;
-                    player->p.ax = ax * move_accel;
-                    player->p.ay = ay * move_accel;
-                    /* Cap velocity */
-                    float vx = player->p.vx, vy = player->p.vy;
-                    float v = sqrtf(vx*vx + vy*vy);
-                    if (v > move_speed) {
-                        player->p.vx = vx / v * move_speed;
-                        player->p.vy = vy / v * move_speed;
-                    }
-                }
-
-                /* Face the mouse cursor if valid, else face movement dir */
-                if (inp.mouse_valid) {
-                    float ddx = inp.mouse_wx - player->t.x;
-                    float ddy = inp.mouse_wy - player->t.y;
-                    if (ddx*ddx + ddy*ddy > 0.01f) player->t.heading = atan2f(ddy, ddx);
-                } else if (mag > 0.001f) {
-                    player->t.heading = atan2f(ay, ax);
-                }
-
-                /* Jump */
-                if (inp.jump && player->t.z < 0.01f) {
-                    player->t.vz = PED_JUMP_VEL;
-                }
-
-                /* Enter vehicle */
-                if (inp.enter_exit) {
-                    vehicle_try_enter(&g_pool, player, 1.6f);
-                }
-
-                /* Shoot */
-                if (inp.shoot) {
-                    do_shoot(player);
-                }
-
-                /* Manual reload */
-                if (inp.reload && !player->gun.reloading &&
-                    player->gun.ammo_in_mag < player->gun.mag_size) {
-                    player->gun.reloading = true;
-                    player->gun.reload_timer = PISTOL_RELOAD_TICKS;
-                }
-            }
-
-            /* --- Weapon tick --- */
-            weapon_tick(player);
-
-            /* --- Simulation --- */
-            vehicle_tick(&g_pool, &g_world, TICK_DT);
-            ai_tick(&g_pool, &g_world, g_player_id, g_tick, player->w.stars);
-            physics_tick(&g_pool, &g_world, TICK_DT);
-            wanted_tick(&g_pool, &g_world, player, g_tick);
-            wanted_spawn_police(&g_pool, &g_world, player, g_tick);
-
-            /* Check if player was killed (busted by police) */
-            if (!player->h.alive) {
-                g_busted = 1;
-                /* will transition next frame */
-            }
-
-            /* --- Render --- */
-            float cam_x = player->t.x;
-            float cam_y = player->t.y;
-            renderer_render_world(&g_world, &g_pool, player, cam_x, cam_y);
-
-
-
-
-            g_tick++;
-        } break;
-
-        /* ======================== PAUSED ======================== */
-        case STATE_PAUSED: {
-            /* Render first — EndDrawing() polls fresh input so ESC doesn't carry over */
-            renderer_draw_pause(g_pause_sel);
-            /* Now check fresh input */
-            if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_W)) {
-                g_pause_sel--;
-                if (g_pause_sel < 0) g_pause_sel = 2;
-            }
-            if (IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S)) {
-                g_pause_sel++;
-                if (g_pause_sel > 2) g_pause_sel = 0;
-            }
-            if (IsKeyPressed(KEY_ESCAPE)) {
-                /* ESC resumes */
-                g_state = STATE_PLAYING;
-            }
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                if (g_pause_sel == 0) {
-                    /* RESUME */
-                    g_state = STATE_PLAYING;
-                } else if (g_pause_sel == 1) {
-                    /* SETTINGS */
-                    g_state = STATE_SETTINGS;
-                    g_settings_sel = 0;
-                    g_settings_waiting = -1;
-                    g_settings_from = STATE_PAUSED;
-                } else {
-                    /* QUIT TO MENU */
-                    g_state = STATE_MENU;
-                    g_menu_sel = 0;
-                }
-            }
-        } break;
-
-        /* ======================== BUSTED ======================== */
-        case STATE_BUSTED: {
-            g_state_timer += dt;
-            renderer_draw_busted(g_state_timer);
-            if (g_state_timer > 4.0f) {
-                /* Restart game */
-                game_init();
-                g_state = STATE_PLAYING;
-            }
-        } break;
-
-        } /* end switch */
-
-        long elapsed = now_us() - frame_start;
-        long to_sleep = tick_us - elapsed;
-        if (to_sleep > 0) sleep_us(to_sleep);
+        game_frame();
     }
+#endif
 
     g_renderer->shutdown();
     input_shutdown();
