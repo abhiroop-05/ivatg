@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IVATG — The Simulation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a14;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', 'Inter', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        h1 {
+            font-size: 2.5rem;
+            color: #ff7828;
+            text-shadow: 0 0 30px rgba(255, 120, 40, 0.4);
+            margin-bottom: 0.5rem;
+            letter-spacing: 0.15em;
+        }
+        .subtitle {
+            color: #888;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+        #canvas-container {
+            position: relative;
+            border: 2px solid #ff782855;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 0 40px rgba(255, 120, 40, 0.15);
+        }
+        canvas {
+            display: block;
+        }
+        .controls {
+            margin-top: 1rem;
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .controls span {
+            background: #1a1a28;
+            padding: 4px 12px;
+            border-radius: 4px;
+            border: 1px solid #333;
+        }
+        .controls kbd {
+            background: #2a2a3a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid #555;
+            color: #ff9955;
+            font-family: monospace;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        #loading .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid #333;
+            border-top-color: #ff7828;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #loading p { color: #888; font-size: 0.9rem; }
+        .fullscreen-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #1a1a28cc;
+            border: 1px solid #555;
+            color: #ff9955;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            z-index: 10;
+            transition: all 0.2s;
+        }
+        .fullscreen-btn:hover {
+            background: #ff782844;
+            border-color: #ff7828;
+        }
+    </style>
+</head>
+<body>
+    <h1>IVATG</h1>
+    <p class="subtitle">THE SIMULATION — Built with C & Raylib</p>
+    <div id="canvas-container">
+        <button class="fullscreen-btn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Loading game...</p>
+        </div>
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"
+                width="1440" height="900"></canvas>
+    </div>
+    <div class="controls">
+        <span><kbd>WASD</kbd> Move</span>
+        <span><kbd>Shift</kbd> Sprint</span>
+        <span><kbd>Space</kbd> Jump</span>
+        <span><kbd>LMB</kbd> Shoot</span>
+        <span><kbd>R</kbd> Reload</span>
+        <span><kbd>E</kbd> Enter Car</span>
+        <span><kbd>V</kbd> Camera</span>
+        <span><kbd>ESC</kbd> Pause</span>
+    </div>
+
+    <script>
+        var Module = {
+            canvas: document.getElementById('canvas'),
+            onRuntimeInitialized: function() {
+                document.getElementById('loading').style.display = 'none';
+            },
+            setStatus: function(text) {
+                if (text) {
+                    var el = document.querySelector('#loading p');
+                    if (el) el.textContent = text;
+                }
+            }
+        };
+
+        function toggleFullscreen() {
+            var container = document.getElementById('canvas-container');
+            if (!document.fullscreenElement) {
+                container.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+    </script>
+    <script async src="gta_sim.js"></script>
+</body>
+</html>

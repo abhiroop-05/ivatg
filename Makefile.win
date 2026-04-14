@@ -1,0 +1,23 @@
+# Makefile.win — Windows / MinGW-w64 (MSYS2) build
+CC      := C:/msys64/mingw64/bin/gcc.exe
+CFLAGS  := -Wall -Wextra -O2 -g -std=c11 -DUSE_RAYLIB
+SRCS    := main.c world.c entity.c physics.c vehicle.c ai.c wanted.c input.c renderer.c
+OBJS    := $(SRCS:.c=.o)
+BIN     := gta_sim.exe
+
+# Use MSYS2-installed raylib headers & library
+RAYLIB_INC := -IC:/msys64/mingw64/include
+RAYLIB_LIB := -LC:/msys64/mingw64/lib -lraylib -lopengl32 -lgdi32 -lwinmm
+
+.PHONY: all clean
+
+all: $(BIN)
+
+$(BIN): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(RAYLIB_LIB)
+
+%.o: %.c
+	$(CC) $(CFLAGS) $(RAYLIB_INC) -c -o $@ $<
+
+clean:
+	del /Q $(OBJS) $(BIN) 2>NUL || true

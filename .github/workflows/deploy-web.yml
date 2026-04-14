@@ -1,0 +1,79 @@
+name: Build WebAssembly & Deploy to Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Download Raylib source
+        run: |
+          wget -q https://github.com/raysan5/raylib/releases/download/5.0/raylib-5.0_src.tar.gz
+          tar xzf raylib-5.0_src.tar.gz
+          mv raylib-5.0 raylib_src
+
+      - name: Build Raylib for Web
+        run: |
+          cd raylib_src/src
+          make PLATFORM=PLATFORM_WEB EMSDK_PATH=$EMSDK -j$(nproc)
+
+      - name: Build IVATG for Web
+        run: |
+          RAYLIB_SRC=raylib_src
+          SRCS="main.c world.c entity.c physics.c vehicle.c ai.c wanted.c input.c renderer.c"
+          
+          emcc -O2 -Wall -DUSE_RAYLIB -DPLATFORM_WEB \
+               -I${RAYLIB_SRC}/src \
+               $SRCS \
+               ${RAYLIB_SRC}/src/libraylib.a \
+               -s USE_GLFW=3 \
+               -s ASYNCIFY \
+               -s TOTAL_MEMORY=67108864 \
+               -s ALLOW_MEMORY_GROWTH=1 \
+               -s FORCE_FILESYSTEM=1 \
+               --shell-file index.html \
+               --preload-file map_default.txt \
+               -o web_out/gta_sim.html
+
+      - name: Prepare Pages output
+        run: |
+          mkdir -p pages_out
+          # Use our custom index.html instead of emscripten's generated one
+          cp web_out/gta_sim.js pages_out/gta_sim.js
+          cp web_out/gta_sim.wasm pages_out/gta_sim.wasm
+          if [ -f web_out/gta_sim.data ]; then cp web_out/gta_sim.data pages_out/gta_sim.data; fi
+          cp index.html pages_out/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'pages_out'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
