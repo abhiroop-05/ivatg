@@ -41,6 +41,7 @@ jobs:
         run: |
           RAYLIB_SRC=raylib_src
           SRCS="main.c world.c entity.c physics.c vehicle.c ai.c wanted.c input.c renderer.c"
+          mkdir -p web_out
           
           emcc -O2 -Wall -DUSE_RAYLIB -DPLATFORM_WEB \
                -I${RAYLIB_SRC}/src \

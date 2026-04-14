@@ -268,7 +268,9 @@ static void weapon_tick(Entity* player) {
  * ============================================================ */
 
 static void game_frame(void) {
+#ifndef PLATFORM_WEB
     long frame_start = now_us();
+#endif
     float dt = TICK_DT;
 
 #ifdef USE_RAYLIB

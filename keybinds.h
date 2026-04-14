@@ -1,6 +1,8 @@
 #ifndef KEYBINDS_H
 #define KEYBINDS_H
 
+#include <stddef.h>  /* for NULL */
+
 #ifdef USE_RAYLIB
 #include "raylib.h"
 #else
